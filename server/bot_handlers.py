@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import html
 import io
 import json
 import os
@@ -411,20 +412,22 @@ async def cb_act_ls(callback: CallbackQuery):
     res = await session_manager.send_command(client_id, "fs_list", {"path": path_param})
     if res.get("status") == "success":
         d = res.get("data", {})
-        cur_path = d.get("current_path", "")
+        cur_path = html.escape(str(d.get("current_path", "")))
         items = d.get("items", [])
 
         text = f"📂 <b>Директория:</b> <code>{cur_path}</code>\n\n"
         for it in items:
             icon = "📁" if it["is_dir"] else "📄"
-            text += f"{icon} <b>{it['name']}</b> ({it['size']})\n"
+            name_esc = html.escape(str(it["name"]))
+            size_esc = html.escape(str(it["size"]))
+            text += f"{icon} <b>{name_esc}</b> ({size_esc})\n"
 
         if not items:
             text += "<i>Папка пуста</i>\n"
 
         await callback.message.answer(text, parse_mode="HTML")
     else:
-        await callback.message.answer(f"❌ Ошибка доступа: {res.get('error')}")
+        await callback.message.answer(f"❌ Ошибка доступа: {html.escape(str(res.get('error')))}")
 
 
 @router.callback_query(F.data.startswith("prompt_ls:"))
@@ -459,14 +462,17 @@ async def process_ls_path(message: Message, state: FSMContext):
     res = await session_manager.send_command(client_id, "fs_list", {"path": path})
     if res.get("status") == "success":
         d = res.get("data", {})
+        cur_path = html.escape(str(d.get("current_path", "")))
         items = d.get("items", [])
-        text = f"📂 <b>Директория:</b> <code>{d.get('current_path')}</code>\n\n"
+        text = f"📂 <b>Директория:</b> <code>{cur_path}</code>\n\n"
         for it in items:
             icon = "📁" if it["is_dir"] else "📄"
-            text += f"{icon} <b>{it['name']}</b> ({it['size']})\n"
+            name_esc = html.escape(str(it["name"]))
+            size_esc = html.escape(str(it["size"]))
+            text += f"{icon} <b>{name_esc}</b> ({size_esc})\n"
         await message.answer(text, parse_mode="HTML")
     else:
-        await message.answer(f"❌ Ошибка доступа: {res.get('error')}")
+        await message.answer(f"❌ Ошибка доступа: {html.escape(str(res.get('error')))}")
 
 
 # ==================== МУЛЬТИМЕДИА ====================

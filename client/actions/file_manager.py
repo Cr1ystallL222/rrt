@@ -37,7 +37,7 @@ def list_directory_contents(dir_path: Optional[str] = None) -> dict:
                 try:
                     stat = entry.stat()
                     is_dir = entry.is_dir()
-                    size_str = "<DIR>" if is_dir else f"{round(stat.st_size / 1024, 1)} KB"
+                    size_str = "[DIR]" if is_dir else f"{round(stat.st_size / 1024, 1)} KB"
                     mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
 
                     items.append({
