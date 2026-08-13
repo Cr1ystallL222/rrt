@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import json
@@ -219,7 +220,12 @@ async def process_dl_path(message: Message, state: FSMContext):
         return
 
     path = message.text.strip().strip('"').strip("'")
-    status_msg = await message.answer(f"⏳ Считывание файла <code>{path}</code>...", parse_mode="HTML")
+    status_msg = await message.answer(
+        f"⏳ <b>[1/3] Запрос файла с ПК...</b>\n"
+        f"📁 Путь: <code>{path}</code>\n\n"
+        f"<i>Удаленный агент считывает и упаковывает файл в буфер...</i>",
+        parse_mode="HTML"
+    )
 
     try:
         res = await session_manager.send_command(client_id, "fs_download", {"path": path}, timeout=180.0)
@@ -231,16 +237,32 @@ async def process_dl_path(message: Message, state: FSMContext):
             orig_size = d.get("original_size_mb", 0)
 
             if not parts:
-                await status_msg.edit_text("❌ Пустой ответ от клиента.")
+                await status_msg.edit_text("❌ Пустой ответ от клиента (нет данных).")
                 return
 
-            await status_msg.delete()
+            await status_msg.edit_text(
+                f"⏳ <b>[2/3] Файл получен сервером!</b>\n"
+                f"📦 Имя: <code>{orig_name}</code> (~{orig_size} MB)\n"
+                f"📦 Всего томов к отправке: <b>{len(parts)}</b>\n\n"
+                f"<i>Начинаем передачу в Telegram...</i>",
+                parse_mode="HTML"
+            )
 
             # Отправка каждой части
             for idx, part in enumerate(parts):
                 file_bytes = base64.b64decode(part["file_base64"])
                 part_filename = part["filename"]
                 file_doc = BufferedInputFile(file_bytes, filename=part_filename)
+
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ <b>[3/3] Отправка в Telegram...</b>\n"
+                        f"📤 Передача тома <b>{idx+1}</b> из <b>{len(parts)}</b>\n"
+                        f"📄 Файл: <code>{part_filename}</code> ({part.get('size_kb')} KB)",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
 
                 if is_multi:
                     caption = (
@@ -252,21 +274,40 @@ async def process_dl_path(message: Message, state: FSMContext):
 
                 await message.answer_document(document=file_doc, caption=caption, parse_mode="HTML")
 
+            await status_msg.edit_text(
+                f"✅ <b>Загрузка успешно завершена!</b>\n\n"
+                f"📁 Файл: <code>{orig_name}</code>\n"
+                f"📦 Всего томов: <b>{len(parts)}</b>",
+                parse_mode="HTML"
+            )
+
             if is_multi:
                 await message.answer(
                     f"ℹ️ <b>Файл был разбит на {len(parts)} тома(ов)</b> (так как превышал лимит Telegram).\n\n"
                     f"💡 <b>Как объединить тома на ПК:</b>\n"
-                    f"Откройте командную строку (CMD) в папке с файлами и выполните:\n"
+                    f"Откройте командную строку (CMD) в папке со скачанными частями и выполните:\n"
                     f"<code>copy /b \"{orig_name}*.part*\" \"{orig_name}\"</code>\n"
-                    f"<i>Если это был .zip, полученный файл распакуйте архиватором.</i>",
+                    f"<i>Если это был .zip, полученный архив распакуйте архиватором.</i>",
                     parse_mode="HTML"
                 )
         else:
-            await status_msg.edit_text(f"❌ Ошибка скачивания: {res.get('error')}")
+            await status_msg.edit_text(
+                f"❌ <b>Ошибка при скачивании файла:</b>\n\n"
+                f"<code>{res.get('error', 'Неизвестная ошибка')}</code>\n\n"
+                f"💡 <i>Проверьте правильность пути, расширения и права доступа к файлу на удаленном ПК.</i>",
+                parse_mode="HTML"
+            )
     except asyncio.TimeoutError:
-        await status_msg.edit_text("❌ Превышено время ожидания ответа от клиента (таймаут 180с). Возможно, файл очень большой или интернет-канал занят.")
+        await status_msg.edit_text(
+            f"❌ <b>Таймаут ожидания (превышено 180с):</b>\n\n"
+            f"Файл <code>{path}</code> слишком большой для текущей скорости интернет-соединения.",
+            parse_mode="HTML"
+        )
     except Exception as e:
-        await status_msg.edit_text(f"❌ Исключение: {type(e).__name__}: {str(e)}")
+        await status_msg.edit_text(
+            f"❌ <b>Исключение:</b> <code>{type(e).__name__}</code>: {str(e)}",
+            parse_mode="HTML"
+        )
 
 
 # 2. Загрузка файла на ПК
