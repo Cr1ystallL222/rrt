@@ -7,6 +7,14 @@ import zipfile
 from typing import Dict, List, Optional
 
 
+ALREADY_COMPRESSED_EXTENSIONS = {
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv",
+    ".mp3", ".wav", ".aac", ".flac", ".ogg",
+    ".iso", ".img", ".jpg", ".jpeg", ".png", ".webp"
+}
+
+
 def list_directory_contents(dir_path: Optional[str] = None) -> dict:
     """
     Получает список файлов и папок в указанной директории.
@@ -61,9 +69,8 @@ def list_directory_contents(dir_path: Optional[str] = None) -> dict:
 def read_file_for_download(file_path: str, chunk_size_mb: int = 40) -> dict:
     """
     Считывает файл любого размера. Если файл > 40 МБ:
-    1. Пробует сжать в ZIP.
-    2. Если архив всё ещё > 40 МБ, автоматически разделяет его на части (тома) по 40 МБ.
-    Гарантирует отправку в Telegram без ограничений по размеру.
+    1. Для несжатых форматов (txt, log, doc, csv, exe, etc.) сжимает быстрым ZIP (level 1).
+    2. Если файл уже сжат или после сжатия всё ещё > 40 МБ, делит на тома по 40 МБ.
     """
     file_path = os.path.abspath(file_path)
 
@@ -75,9 +82,10 @@ def read_file_for_download(file_path: str, chunk_size_mb: int = 40) -> dict:
     try:
         orig_size = os.path.getsize(file_path)
         base_name = os.path.basename(file_path)
+        _, ext = os.path.splitext(base_name)
         chunk_size_bytes = chunk_size_mb * 1024 * 1024
 
-        # Случай 1: Файл маленький (<= 40 МБ) - отдаем напрямую
+        # Случай 1: Файл <= 40 МБ - читаем напрямую
         if orig_size <= chunk_size_bytes:
             with open(file_path, "rb") as f:
                 content = f.read()
@@ -85,6 +93,9 @@ def read_file_for_download(file_path: str, chunk_size_mb: int = 40) -> dict:
             return {
                 "success": True,
                 "is_multipart": False,
+                "is_compressed": False,
+                "original_name": base_name,
+                "original_size_mb": round(orig_size / (1024 * 1024), 2),
                 "total_parts": 1,
                 "parts": [{
                     "filename": base_name,
@@ -93,37 +104,57 @@ def read_file_for_download(file_path: str, chunk_size_mb: int = 40) -> dict:
                 }]
             }
 
-        # Случай 2: Файл > 40 МБ. Сжимаем в ZIP архив
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zip_f:
-            zip_f.write(file_path, arcname=base_name)
+        # Случай 2: Файл > 40 МБ
+        target_bytes = None
+        is_zip = False
+        target_name = base_name
 
-        zipped_bytes = zip_buffer.getvalue()
-        zipped_size = len(zipped_bytes)
+        # Если расширение не входит в список уже сжатых, пробуем быстрое сжатие
+        if ext.lower() not in ALREADY_COMPRESSED_EXTENSIONS:
+            try:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zip_f:
+                    zip_f.write(file_path, arcname=base_name)
+                zipped = zip_buffer.getvalue()
+                if len(zipped) < orig_size:
+                    target_bytes = zipped
+                    is_zip = True
+                    target_name = f"{base_name}.zip"
+            except Exception:
+                target_bytes = None
 
-        # Если сжатый архив поместился в 40 МБ:
-        if zipped_size <= chunk_size_bytes:
+        # Если не сжимали или сжатие не помогло:
+        if target_bytes is None:
+            with open(file_path, "rb") as f:
+                target_bytes = f.read()
+
+        total_bytes_len = len(target_bytes)
+
+        # Если после сжатия поместился в 40 МБ
+        if total_bytes_len <= chunk_size_bytes:
             return {
                 "success": True,
                 "is_multipart": False,
-                "is_compressed": True,
+                "is_compressed": is_zip,
+                "original_name": base_name,
+                "original_size_mb": round(orig_size / (1024 * 1024), 2),
                 "total_parts": 1,
                 "parts": [{
-                    "filename": f"{base_name}.zip",
-                    "size_kb": round(zipped_size / 1024, 2),
-                    "file_base64": base64.b64encode(zipped_bytes).decode("utf-8")
+                    "filename": target_name,
+                    "size_kb": round(total_bytes_len / 1024, 2),
+                    "file_base64": base64.b64encode(target_bytes).decode("utf-8")
                 }]
             }
 
-        # Случай 3: Даже архив > 40 МБ. Разделяем архив на части (тома)
-        total_parts = math.ceil(zipped_size / chunk_size_bytes)
+        # Случай 3: Многотомный архив/файл
+        total_parts = math.ceil(total_bytes_len / chunk_size_bytes)
         parts_list = []
 
         for i in range(total_parts):
             start = i * chunk_size_bytes
             end = start + chunk_size_bytes
-            part_data = zipped_bytes[start:end]
-            part_filename = f"{base_name}.zip.part{i+1:02d}"
+            part_data = target_bytes[start:end]
+            part_filename = f"{target_name}.part{i+1:02d}"
 
             parts_list.append({
                 "part_num": i + 1,
@@ -136,7 +167,8 @@ def read_file_for_download(file_path: str, chunk_size_mb: int = 40) -> dict:
         return {
             "success": True,
             "is_multipart": True,
-            "is_compressed": True,
+            "is_compressed": is_zip,
+            "target_name": target_name,
             "original_name": base_name,
             "original_size_mb": round(orig_size / (1024 * 1024), 2),
             "total_parts": total_parts,

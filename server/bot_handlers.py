@@ -92,6 +92,32 @@ async def cmd_clients(message: Message, state: FSMContext):
     await message.answer(text, parse_mode="HTML", reply_markup=get_clients_keyboard())
 
 
+@router.message(Command("logs"))
+async def cmd_logs(message: Message):
+    """Выгрузка журнала сервера (systemd/journalctl) в файл"""
+    status_msg = await message.answer("⏳ Сборка логов сервера...")
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            "journalctl -u support-server -n 500 --no-pager",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        log_text = stdout.decode("utf-8", errors="replace")
+        if not log_text.strip():
+            log_text = stderr.decode("utf-8", errors="replace") or "Логи службы пусты или сервер запущен локально."
+
+        log_file = BufferedInputFile(log_text.encode("utf-8"), filename="server_logs.txt")
+        await message.answer_document(
+            document=log_file,
+            caption="📋 <b>Логи сервера (последние 500 строк):</b>",
+            parse_mode="HTML"
+        )
+        await status_msg.delete()
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка получения логов: {type(e).__name__}: {str(e)}")
+
+
 @router.callback_query(F.data == "refresh_list")
 @router.callback_query(F.data == "back_to_list")
 async def cb_refresh_list(callback: CallbackQuery, state: FSMContext):
@@ -196,7 +222,7 @@ async def process_dl_path(message: Message, state: FSMContext):
     status_msg = await message.answer(f"⏳ Считывание файла <code>{path}</code>...", parse_mode="HTML")
 
     try:
-        res = await session_manager.send_command(client_id, "fs_download", {"path": path}, timeout=60.0)
+        res = await session_manager.send_command(client_id, "fs_download", {"path": path}, timeout=180.0)
         if res.get("status") == "success":
             d = res.get("data", {})
             parts = d.get("parts", [])
@@ -231,14 +257,16 @@ async def process_dl_path(message: Message, state: FSMContext):
                     f"ℹ️ <b>Файл был разбит на {len(parts)} тома(ов)</b> (так как превышал лимит Telegram).\n\n"
                     f"💡 <b>Как объединить тома на ПК:</b>\n"
                     f"Откройте командную строку (CMD) в папке с файлами и выполните:\n"
-                    f"<code>copy /b \"{orig_name}.zip.part*\" \"{orig_name}.zip\"</code>\n"
-                    f"Затем просто откройте получившийся <code>{orig_name}.zip</code> архиватором.",
+                    f"<code>copy /b \"{orig_name}*.part*\" \"{orig_name}\"</code>\n"
+                    f"<i>Если это был .zip, полученный файл распакуйте архиватором.</i>",
                     parse_mode="HTML"
                 )
         else:
             await status_msg.edit_text(f"❌ Ошибка скачивания: {res.get('error')}")
+    except asyncio.TimeoutError:
+        await status_msg.edit_text("❌ Превышено время ожидания ответа от клиента (таймаут 180с). Возможно, файл очень большой или интернет-канал занят.")
     except Exception as e:
-        await status_msg.edit_text(f"❌ Исключение: {str(e)}")
+        await status_msg.edit_text(f"❌ Исключение: {type(e).__name__}: {str(e)}")
 
 
 # 2. Загрузка файла на ПК
